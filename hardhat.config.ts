@@ -19,4 +19,9 @@ export default defineConfig({
       },
     },
   },
+  test: {
+    solidity: {
+      ffi: true,
+    },
+  },
 });
