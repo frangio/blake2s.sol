@@ -17,12 +17,11 @@ library Blake2s {
     struct State {
         uint32[8] h;
         uint32[2] t;
-        uint32[2] f;
-        bytes buf;
     }
 
-    function init(State memory S) internal pure {
-        S.h[0] = IV0;
+    function hash(bytes memory input) internal pure returns (bytes32) {
+        State memory S;
+        S.h[0] = IV0 ^ 0x01010000 ^ OUTBYTES;
         S.h[1] = IV1;
         S.h[2] = IV2;
         S.h[3] = IV3;
@@ -31,53 +30,29 @@ library Blake2s {
         S.h[6] = IV6;
         S.h[7] = IV7;
 
-        S.h[0] ^= 0x01010000 ^ OUTBYTES;
+        uint256 len = input.length;
+        uint256 offset = 0;
 
-        S.t[0] = 0;
-        S.t[1] = 0;
-        S.f[0] = 0;
-        S.f[1] = 0;
-        S.buf = "";
-    }
-
-    function update(State memory S, bytes memory input) internal pure {
         unchecked {
-            uint256 inlen = input.length;
-            uint256 inOffset = 0;
-
-            if (inlen > 0) {
-                uint256 left = S.buf.length;
-                uint256 fill = BLOCKBYTES - left;
-
-                if (inlen > fill) {
-                    S.buf = bytes.concat(S.buf, slice(input, inOffset, fill));
-                    incrementCounter(S, BLOCKBYTES);
-                    compress(S, S.buf);
-                    inOffset += fill;
-                    inlen -= fill;
-                    S.buf = "";
-
-                    while (inlen > BLOCKBYTES) {
-                        incrementCounter(S, BLOCKBYTES);
-                        compress(S, slice(input, inOffset, BLOCKBYTES));
-                        inOffset += BLOCKBYTES;
-                        inlen -= BLOCKBYTES;
-                    }
-                }
-                S.buf = bytes.concat(S.buf, slice(input, inOffset, inlen));
+            while (len > BLOCKBYTES) {
+                incrementCounter(S, BLOCKBYTES);
+                compress(S, input, offset, false);
+                offset += BLOCKBYTES;
+                len -= BLOCKBYTES;
             }
+
+            bytes memory padded = new bytes(64);
+            for (uint256 i = 0; i < len; i++) {
+                padded[i] = input[offset + i];
+            }
+            incrementCounter(S, uint32(len));
+            compress(S, padded, 0, true);
         }
+
+        return hashFromState(S);
     }
 
-    function finalize(State memory S) internal pure returns (bytes32) {
-        incrementCounter(S, uint32(S.buf.length));
-        S.f[0] = type(uint32).max;
-
-        while (S.buf.length < BLOCKBYTES) {
-            S.buf = bytes.concat(S.buf, bytes1(0));
-        }
-        compress(S, S.buf);
-
+    function hashFromState(State memory S) private pure returns (bytes32) {
         bytes memory out = new bytes(32);
         unchecked {
             store32(out, 0, S.h[0]);
@@ -90,13 +65,6 @@ library Blake2s {
             store32(out, 28, S.h[7]);
         }
         return bytes32(out);
-    }
-
-    function hash(bytes memory input) internal pure returns (bytes32) {
-        State memory S;
-        init(S);
-        update(S, input);
-        return finalize(S);
     }
 
     function incrementCounter(State memory S, uint32 inc) private pure {
@@ -132,37 +100,27 @@ library Blake2s {
         }
     }
 
-    function slice(bytes memory data, uint256 start, uint256 len) private pure returns (bytes memory) {
-        bytes memory result = new bytes(len);
-        unchecked {
-            for (uint256 i = 0; i < len; i++) {
-                result[i] = data[start + i];
-            }
-        }
-        return result;
-    }
-
-    function compress(State memory S, bytes memory block_) private pure {
+    function compress(State memory S, bytes memory block_, uint256 offset, bool isFinal) private pure {
         uint32[16] memory m;
         uint32[16] memory v;
 
         unchecked {
-            m[0] = load32(block_, 0);
-            m[1] = load32(block_, 4);
-            m[2] = load32(block_, 8);
-            m[3] = load32(block_, 12);
-            m[4] = load32(block_, 16);
-            m[5] = load32(block_, 20);
-            m[6] = load32(block_, 24);
-            m[7] = load32(block_, 28);
-            m[8] = load32(block_, 32);
-            m[9] = load32(block_, 36);
-            m[10] = load32(block_, 40);
-            m[11] = load32(block_, 44);
-            m[12] = load32(block_, 48);
-            m[13] = load32(block_, 52);
-            m[14] = load32(block_, 56);
-            m[15] = load32(block_, 60);
+            m[0] = load32(block_, offset + 0);
+            m[1] = load32(block_, offset + 4);
+            m[2] = load32(block_, offset + 8);
+            m[3] = load32(block_, offset + 12);
+            m[4] = load32(block_, offset + 16);
+            m[5] = load32(block_, offset + 20);
+            m[6] = load32(block_, offset + 24);
+            m[7] = load32(block_, offset + 28);
+            m[8] = load32(block_, offset + 32);
+            m[9] = load32(block_, offset + 36);
+            m[10] = load32(block_, offset + 40);
+            m[11] = load32(block_, offset + 44);
+            m[12] = load32(block_, offset + 48);
+            m[13] = load32(block_, offset + 52);
+            m[14] = load32(block_, offset + 56);
+            m[15] = load32(block_, offset + 60);
 
             v[0] = S.h[0];
             v[1] = S.h[1];
@@ -180,8 +138,8 @@ library Blake2s {
         v[11] = IV3;
         v[12] = S.t[0] ^ IV4;
         v[13] = S.t[1] ^ IV5;
-        v[14] = S.f[0] ^ IV6;
-        v[15] = S.f[1] ^ IV7;
+        v[14] = isFinal ? type(uint32).max ^ IV6 : IV6;
+        v[15] = IV7;
 
         round(v, m, 0);
         round(v, m, 1);
