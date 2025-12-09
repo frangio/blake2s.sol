@@ -41,29 +41,31 @@ library Blake2s {
     }
 
     function update(State memory S, bytes memory input) internal pure {
-        uint256 inlen = input.length;
-        uint256 inOffset = 0;
+        unchecked {
+            uint256 inlen = input.length;
+            uint256 inOffset = 0;
 
-        if (inlen > 0) {
-            uint256 left = S.buf.length;
-            uint256 fill = BLOCKBYTES - left;
+            if (inlen > 0) {
+                uint256 left = S.buf.length;
+                uint256 fill = BLOCKBYTES - left;
 
-            if (inlen > fill) {
-                S.buf = bytes.concat(S.buf, slice(input, inOffset, fill));
-                incrementCounter(S, BLOCKBYTES);
-                compress(S, S.buf);
-                inOffset += fill;
-                inlen -= fill;
-                S.buf = "";
-
-                while (inlen > BLOCKBYTES) {
+                if (inlen > fill) {
+                    S.buf = bytes.concat(S.buf, slice(input, inOffset, fill));
                     incrementCounter(S, BLOCKBYTES);
-                    compress(S, slice(input, inOffset, BLOCKBYTES));
-                    inOffset += BLOCKBYTES;
-                    inlen -= BLOCKBYTES;
+                    compress(S, S.buf);
+                    inOffset += fill;
+                    inlen -= fill;
+                    S.buf = "";
+
+                    while (inlen > BLOCKBYTES) {
+                        incrementCounter(S, BLOCKBYTES);
+                        compress(S, slice(input, inOffset, BLOCKBYTES));
+                        inOffset += BLOCKBYTES;
+                        inlen -= BLOCKBYTES;
+                    }
                 }
+                S.buf = bytes.concat(S.buf, slice(input, inOffset, inlen));
             }
-            S.buf = bytes.concat(S.buf, slice(input, inOffset, inlen));
         }
     }
 
@@ -77,8 +79,10 @@ library Blake2s {
         compress(S, S.buf);
 
         bytes memory out = new bytes(32);
-        for (uint256 i = 0; i < 8; i++) {
-            store32(out, i * 4, S.h[i]);
+        unchecked {
+            for (uint256 i = 0; i < 8; i++) {
+                store32(out, i << 2, S.h[i]);
+            }
         }
         return bytes32(out);
     }
@@ -91,34 +95,44 @@ library Blake2s {
     }
 
     function incrementCounter(State memory S, uint32 inc) private pure {
-        S.t[0] += inc;
-        if (S.t[0] < inc) {
-            S.t[1] += 1;
+        unchecked {
+            S.t[0] += inc;
+            if (S.t[0] < inc) {
+                S.t[1] += 1;
+            }
         }
     }
 
     function rotr32(uint32 x, uint32 n) private pure returns (uint32) {
-        return (x >> n) | (x << (32 - n));
+        unchecked {
+            return (x >> n) | (x << (32 - n));
+        }
     }
 
     function load32(bytes memory b, uint256 offset) private pure returns (uint32) {
-        return uint32(uint8(b[offset])) |
-               (uint32(uint8(b[offset + 1])) << 8) |
-               (uint32(uint8(b[offset + 2])) << 16) |
-               (uint32(uint8(b[offset + 3])) << 24);
+        unchecked {
+            return uint32(uint8(b[offset])) |
+                   (uint32(uint8(b[offset + 1])) << 8) |
+                   (uint32(uint8(b[offset + 2])) << 16) |
+                   (uint32(uint8(b[offset + 3])) << 24);
+        }
     }
 
     function store32(bytes memory b, uint256 offset, uint32 value) private pure {
-        b[offset] = bytes1(uint8(value));
-        b[offset + 1] = bytes1(uint8(value >> 8));
-        b[offset + 2] = bytes1(uint8(value >> 16));
-        b[offset + 3] = bytes1(uint8(value >> 24));
+        unchecked {
+            b[offset] = bytes1(uint8(value));
+            b[offset + 1] = bytes1(uint8(value >> 8));
+            b[offset + 2] = bytes1(uint8(value >> 16));
+            b[offset + 3] = bytes1(uint8(value >> 24));
+        }
     }
 
     function slice(bytes memory data, uint256 start, uint256 len) private pure returns (bytes memory) {
         bytes memory result = new bytes(len);
-        for (uint256 i = 0; i < len; i++) {
-            result[i] = data[start + i];
+        unchecked {
+            for (uint256 i = 0; i < len; i++) {
+                result[i] = data[start + i];
+            }
         }
         return result;
     }
@@ -127,12 +141,14 @@ library Blake2s {
         uint32[16] memory m;
         uint32[16] memory v;
 
-        for (uint256 i = 0; i < 16; i++) {
-            m[i] = load32(block_, i * 4);
-        }
+        unchecked {
+            for (uint256 i = 0; i < 16; i++) {
+                m[i] = load32(block_, i << 2);
+            }
 
-        for (uint256 i = 0; i < 8; i++) {
-            v[i] = S.h[i];
+            for (uint256 i = 0; i < 8; i++) {
+                v[i] = S.h[i];
+            }
         }
 
         v[8] = IV0;
@@ -155,8 +171,10 @@ library Blake2s {
         round(v, m, 8);
         round(v, m, 9);
 
-        for (uint256 i = 0; i < 8; i++) {
-            S.h[i] = S.h[i] ^ v[i] ^ v[i + 8];
+        unchecked {
+            for (uint256 i = 0; i < 8; i++) {
+                S.h[i] = S.h[i] ^ v[i] ^ v[i + 8];
+            }
         }
     }
 
