@@ -80,9 +80,14 @@ library Blake2s {
 
         bytes memory out = new bytes(32);
         unchecked {
-            for (uint256 i = 0; i < 8; i++) {
-                store32(out, i << 2, S.h[i]);
-            }
+            store32(out, 0, S.h[0]);
+            store32(out, 4, S.h[1]);
+            store32(out, 8, S.h[2]);
+            store32(out, 12, S.h[3]);
+            store32(out, 16, S.h[4]);
+            store32(out, 20, S.h[5]);
+            store32(out, 24, S.h[6]);
+            store32(out, 28, S.h[7]);
         }
         return bytes32(out);
     }
@@ -142,13 +147,31 @@ library Blake2s {
         uint32[16] memory v;
 
         unchecked {
-            for (uint256 i = 0; i < 16; i++) {
-                m[i] = load32(block_, i << 2);
-            }
+            m[0] = load32(block_, 0);
+            m[1] = load32(block_, 4);
+            m[2] = load32(block_, 8);
+            m[3] = load32(block_, 12);
+            m[4] = load32(block_, 16);
+            m[5] = load32(block_, 20);
+            m[6] = load32(block_, 24);
+            m[7] = load32(block_, 28);
+            m[8] = load32(block_, 32);
+            m[9] = load32(block_, 36);
+            m[10] = load32(block_, 40);
+            m[11] = load32(block_, 44);
+            m[12] = load32(block_, 48);
+            m[13] = load32(block_, 52);
+            m[14] = load32(block_, 56);
+            m[15] = load32(block_, 60);
 
-            for (uint256 i = 0; i < 8; i++) {
-                v[i] = S.h[i];
-            }
+            v[0] = S.h[0];
+            v[1] = S.h[1];
+            v[2] = S.h[2];
+            v[3] = S.h[3];
+            v[4] = S.h[4];
+            v[5] = S.h[5];
+            v[6] = S.h[6];
+            v[7] = S.h[7];
         }
 
         v[8] = IV0;
@@ -171,11 +194,14 @@ library Blake2s {
         round(v, m, 8);
         round(v, m, 9);
 
-        unchecked {
-            for (uint256 i = 0; i < 8; i++) {
-                S.h[i] = S.h[i] ^ v[i] ^ v[i + 8];
-            }
-        }
+        S.h[0] ^= v[0] ^ v[8];
+        S.h[1] ^= v[1] ^ v[9];
+        S.h[2] ^= v[2] ^ v[10];
+        S.h[3] ^= v[3] ^ v[11];
+        S.h[4] ^= v[4] ^ v[12];
+        S.h[5] ^= v[5] ^ v[13];
+        S.h[6] ^= v[6] ^ v[14];
+        S.h[7] ^= v[7] ^ v[15];
     }
 
     function G(uint32[16] memory v, uint32[16] memory, uint256 a, uint256 b, uint256 c, uint256 d, uint32 x, uint32 y) private pure {
