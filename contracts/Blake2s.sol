@@ -203,14 +203,8 @@ library Blake2s {
     }
 
     // Pack 4 message words into lanes
-    function packM(uint32 m0, uint32 m1, uint32 m2, uint32 m3) private pure returns (uint256 result) {
-        assembly ("memory-safe") {
-            mstore(12, m0)
-            mstore(8, m1)
-            mstore(4, m2)
-            mstore(0, m3)
-            result := mload(12)
-        }
+    function packM(uint32 m0, uint32 m1, uint32 m2, uint32 m3) private pure returns (uint256) {
+        return uint256(m0) | (uint256(m1) << 32) | (uint256(m2) << 64) | (uint256(m3) << 96);
     }
 
     // Byte-swap within each 32-bit lane (8 lanes)
