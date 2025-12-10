@@ -14,194 +14,278 @@ library Blake2s {
     uint32 constant IV6 = 0x1F83D9AB;
     uint32 constant IV7 = 0x5BE0CD19;
 
-    struct State {
-        uint32[8] h;
-        uint32[2] t;
+    struct Hasher {
+        bytes sigma;
     }
 
-    function hash(bytes memory input) internal pure returns (bytes32) {
-        State memory S;
-        S.h[0] = IV0 ^ 0x01010000 ^ OUTBYTES;
-        S.h[1] = IV1;
-        S.h[2] = IV2;
-        S.h[3] = IV3;
-        S.h[4] = IV4;
-        S.h[5] = IV5;
-        S.h[6] = IV6;
-        S.h[7] = IV7;
+    function newHasher() internal pure returns (Hasher memory) {
+        // Sigma table with values pre-multiplied by 4 (byte offsets into m)
+        return Hasher(hex"0004080c1014181c2024282c3034383c38281020243c3418043000082c1c140c2c20300014083c3428380c181c0424101c240c0434302c380818142810003c202400141c0810283c38042c3018200c3408301828002c200c10341c143c3804243014043c38341028001c180c2408202c342c1c3830040c2414003c1020180828183c38242c0c00203008341c04102814280820101c1804143c2c24380c303400");
+    }
+
+    function hash(Hasher memory hasher, bytes memory input) internal pure returns (bytes32) {
+        // Initialize state: h[0] = IV0 ^ 0x01010000 ^ OUTBYTES, h[1..7] = IV[1..7]
+        uint256 h1 = uint256(IV0 ^ 0x01010000 ^ OUTBYTES) 
+                  | (uint256(IV1) << 32) 
+                  | (uint256(IV2) << 64) 
+                  | (uint256(IV3) << 96);
+        uint256 h2 = uint256(IV4) 
+                   | (uint256(IV5) << 32) 
+                   | (uint256(IV6) << 64) 
+                   | (uint256(IV7) << 96);
+        uint64 t = 0;
 
         uint256 len = input.length;
         uint256 offset = 0;
 
         unchecked {
             while (len > BLOCKBYTES) {
-                incrementCounter(S, BLOCKBYTES);
-                compress(S, input, offset, false);
+                t += BLOCKBYTES;
+                (h1, h2) = compress(hasher.sigma, h1, h2, t, input, offset, false);
                 offset += BLOCKBYTES;
                 len -= BLOCKBYTES;
             }
 
             bytes memory padded = new bytes(64);
-            for (uint256 i = 0; i < len; i++) {
-                padded[i] = input[offset + i];
+            assembly ("memory-safe") {
+                let src := add(add(input, 32), offset)
+                let dst := add(padded, 32)
+                
+                // Copy data and zero the tail
+                mstore(dst, mload(src))
+                mstore(add(dst, len), 0)
+                mstore(add(dst, 32), 0)
+                
+                // If len > 32, restore second word then re-zero tail
+                if gt(len, 32) {
+                    mstore(add(dst, 32), mload(add(src, 32)))
+                    mstore(add(dst, len), 0)
+                }
             }
-            incrementCounter(S, uint32(len));
-            compress(S, padded, 0, true);
+            t += uint64(len);
+            (h1, h2) = compress(hasher.sigma, h1, h2, t, padded, 0, true);
         }
 
-        return hashFromState(S);
+        return hashFromState(h1, h2);
     }
 
-    function hashFromState(State memory S) private pure returns (bytes32) {
-        bytes memory out = new bytes(32);
+    function hashFromState(uint256 h1, uint256 h2) private pure returns (bytes32) {
+        uint256 x = (h1 << 128) | (h2 & MASK128);
         unchecked {
-            store32(out, 0, S.h[0]);
-            store32(out, 4, S.h[1]);
-            store32(out, 8, S.h[2]);
-            store32(out, 12, S.h[3]);
-            store32(out, 16, S.h[4]);
-            store32(out, 20, S.h[5]);
-            store32(out, 24, S.h[6]);
-            store32(out, 28, S.h[7]);
+            // Swap 64-bit halves within each 128-bit section
+            x = ((x >> 64) & 0x0000000000000000FFFFFFFFFFFFFFFF0000000000000000FFFFFFFFFFFFFFFF) |
+                ((x << 64) & 0xFFFFFFFFFFFFFFFF0000000000000000FFFFFFFFFFFFFFFF0000000000000000);
+            // Swap 32-bit halves within each 64-bit section
+            x = ((x >> 32) & 0x00000000FFFFFFFF00000000FFFFFFFF00000000FFFFFFFF00000000FFFFFFFF) |
+                ((x << 32) & 0xFFFFFFFF00000000FFFFFFFF00000000FFFFFFFF00000000FFFFFFFF00000000);
+            // Swap 16-bit halves within each 32-bit section
+            x = ((x >> 16) & 0x0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF) |
+                ((x << 16) & 0xFFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000);
+            // Swap 8-bit halves within each 16-bit section
+            x = ((x >> 8) & 0x00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF) |
+                ((x << 8) & 0xFF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00);
         }
-        return bytes32(out);
+        return bytes32(x);
     }
 
-    function incrementCounter(State memory S, uint32 inc) private pure {
+    // Mask for 4 lanes of 32-bit words (bits 0-127)
+    uint256 constant MASK128 = (1 << 128) - 1;
+    uint256 constant MASK32 = 0xFFFFFFFF;
+
+    uint256 constant HIGHBIT = 0x80000000800000008000000080000000;
+
+    // Packed add: add 4x32-bit lanes without cross-lane carry
+    function add32x4(uint256 a, uint256 b) private pure returns (uint256) {
         unchecked {
-            S.t[0] += inc;
-            if (S.t[0] < inc) {
-                S.t[1] += 1;
-            }
+            uint256 lo = (a & ~HIGHBIT) + (b & ~HIGHBIT);
+            // (a & H) ^ (b & H) == (a ^ b) & H
+            return lo ^ ((a ^ b) & HIGHBIT);
         }
     }
 
-    function rotr32(uint32 x, uint32 n) private pure returns (uint32) {
+    // Packed add of 3 values: a + b + c
+    function add32x4_3(uint256 a, uint256 b, uint256 c) private pure returns (uint256) {
         unchecked {
-            return (x >> n) | (x << (32 - n));
+            // Combine high bits: (a&H) ^ (b&H) ^ (c&H) = (a^b^c) & H
+            uint256 abcHi = (a ^ b ^ c) & HIGHBIT;
+            uint256 aMasked = a & ~HIGHBIT;
+            uint256 bMasked = b & ~HIGHBIT;
+            uint256 cMasked = c & ~HIGHBIT;
+            
+            uint256 sumAB = aMasked + bMasked;
+            uint256 sumABMasked = sumAB & ~HIGHBIT;
+            uint256 sumABHi = sumAB ^ sumABMasked;
+            
+            return (sumABMasked + cMasked) ^ sumABHi ^ abcHi;
         }
     }
 
-    function load32(bytes memory b, uint256 offset) private pure returns (uint32) {
+    function rotr32x4_16(uint256 x) private pure returns (uint256) {
         unchecked {
-            return uint32(uint8(b[offset])) |
-                   (uint32(uint8(b[offset + 1])) << 8) |
-                   (uint32(uint8(b[offset + 2])) << 16) |
-                   (uint32(uint8(b[offset + 3])) << 24);
+            uint256 right = (x >> 16) & 0x0000FFFF0000FFFF0000FFFF0000FFFF;
+            uint256 left = (x << 16) & 0xFFFF0000FFFF0000FFFF0000FFFF0000;
+            return right | left;
         }
     }
 
-    function store32(bytes memory b, uint256 offset, uint32 value) private pure {
+    function rotr32x4_12(uint256 x) private pure returns (uint256) {
         unchecked {
-            b[offset] = bytes1(uint8(value));
-            b[offset + 1] = bytes1(uint8(value >> 8));
-            b[offset + 2] = bytes1(uint8(value >> 16));
-            b[offset + 3] = bytes1(uint8(value >> 24));
+            uint256 right = (x >> 12) & 0x000FFFFF000FFFFF000FFFFF000FFFFF;
+            uint256 left = (x << 20) & 0xFFF00000FFF00000FFF00000FFF00000;
+            return right | left;
         }
     }
 
-    function compress(State memory S, bytes memory block_, uint256 offset, bool isFinal) private pure {
-        uint32[16] memory m;
-        uint32[16] memory v;
-
+    function rotr32x4_8(uint256 x) private pure returns (uint256) {
         unchecked {
-            m[0] = load32(block_, offset + 0);
-            m[1] = load32(block_, offset + 4);
-            m[2] = load32(block_, offset + 8);
-            m[3] = load32(block_, offset + 12);
-            m[4] = load32(block_, offset + 16);
-            m[5] = load32(block_, offset + 20);
-            m[6] = load32(block_, offset + 24);
-            m[7] = load32(block_, offset + 28);
-            m[8] = load32(block_, offset + 32);
-            m[9] = load32(block_, offset + 36);
-            m[10] = load32(block_, offset + 40);
-            m[11] = load32(block_, offset + 44);
-            m[12] = load32(block_, offset + 48);
-            m[13] = load32(block_, offset + 52);
-            m[14] = load32(block_, offset + 56);
-            m[15] = load32(block_, offset + 60);
-
-            v[0] = S.h[0];
-            v[1] = S.h[1];
-            v[2] = S.h[2];
-            v[3] = S.h[3];
-            v[4] = S.h[4];
-            v[5] = S.h[5];
-            v[6] = S.h[6];
-            v[7] = S.h[7];
+            uint256 right = (x >> 8) & 0x00FFFFFF00FFFFFF00FFFFFF00FFFFFF;
+            uint256 left = (x << 24) & 0xFF000000FF000000FF000000FF000000;
+            return right | left;
         }
-
-        v[8] = IV0;
-        v[9] = IV1;
-        v[10] = IV2;
-        v[11] = IV3;
-        v[12] = S.t[0] ^ IV4;
-        v[13] = S.t[1] ^ IV5;
-        v[14] = isFinal ? type(uint32).max ^ IV6 : IV6;
-        v[15] = IV7;
-
-        round(v, m, 0);
-        round(v, m, 1);
-        round(v, m, 2);
-        round(v, m, 3);
-        round(v, m, 4);
-        round(v, m, 5);
-        round(v, m, 6);
-        round(v, m, 7);
-        round(v, m, 8);
-        round(v, m, 9);
-
-        S.h[0] ^= v[0] ^ v[8];
-        S.h[1] ^= v[1] ^ v[9];
-        S.h[2] ^= v[2] ^ v[10];
-        S.h[3] ^= v[3] ^ v[11];
-        S.h[4] ^= v[4] ^ v[12];
-        S.h[5] ^= v[5] ^ v[13];
-        S.h[6] ^= v[6] ^ v[14];
-        S.h[7] ^= v[7] ^ v[15];
     }
 
-    function G(uint32[16] memory v, uint32[16] memory, uint256 a, uint256 b, uint256 c, uint256 d, uint32 x, uint32 y) private pure {
+    function rotr32x4_7(uint256 x) private pure returns (uint256) {
         unchecked {
-            v[a] = v[a] + v[b] + x;
-            v[d] = rotr32(v[d] ^ v[a], 16);
-            v[c] = v[c] + v[d];
-            v[b] = rotr32(v[b] ^ v[c], 12);
-            v[a] = v[a] + v[b] + y;
-            v[d] = rotr32(v[d] ^ v[a], 8);
-            v[c] = v[c] + v[d];
-            v[b] = rotr32(v[b] ^ v[c], 7);
+            uint256 right = (x >> 7) & 0x01FFFFFF01FFFFFF01FFFFFF01FFFFFF;
+            uint256 left = (x << 25) & 0xFE000000FE000000FE000000FE000000;
+            return right | left;
         }
     }
 
-    uint256 constant SIGMA0123 = 0x8F04A562EBCD1397491763EADF250C8B357B20C16DF984AEFEDCBA9876543210;
-    uint256 constant SIGMA4567 = 0xA2684F05931CE7BDB8293670A4DEF15C91EF57D438B0A6C2D386CB1EFA427509;
-    uint256 constant SIGMA89 = 0x0DC3E9BF5167482A5A417D2C803B9EF6;
+    // Rotate lanes left by 1: [0,1,2,3] -> [1,2,3,0]
+    function rotl_lanes_1(uint256 x) private pure returns (uint256 result) {
+        assembly ("memory-safe") {
+            mstore(16, x)
+            mstore(0, x)
+            result := mload(12)
+        }
+    }
 
-    function sigma(uint256 r, uint256 i) private pure returns (uint256) {
+    // Rotate lanes left by 2: [0,1,2,3] -> [2,3,0,1]
+    function rotl_lanes_2(uint256 x) private pure returns (uint256 result) {
+        assembly ("memory-safe") {
+            mstore(16, x)
+            mstore(0, x)
+            result := mload(8)
+        }
+    }
+
+    // Rotate lanes left by 3: [0,1,2,3] -> [3,0,1,2]
+    function rotl_lanes_3(uint256 x) private pure returns (uint256 result) {
+        assembly ("memory-safe") {
+            mstore(16, x)
+            mstore(0, x)
+            result := mload(4)
+        }
+    }
+
+    // G function on 4 parallel lanes
+    function G4(uint256 a, uint256 b, uint256 c, uint256 d, uint256 x, uint256 y) 
+        private pure returns (uint256, uint256, uint256, uint256) 
+    {
         unchecked {
-            uint256 packed;
-            if (r < 4) packed = SIGMA0123;
-            else if (r < 8) packed = SIGMA4567;
-            else packed = SIGMA89;
-
-            return (packed >> (((r & 0x3) << 6) + (i << 2))) & 0xF;
+            a = add32x4_3(a, b, x);
+            d = rotr32x4_16(d ^ a);
+            c = add32x4(c, d);
+            b = rotr32x4_12(b ^ c);
+            a = add32x4_3(a, b, y);
+            d = rotr32x4_8(d ^ a);
+            c = add32x4(c, d);
+            b = rotr32x4_7(b ^ c);
+            return (a, b, c, d);
         }
     }
 
-    function round(uint32[16] memory v, uint32[16] memory m, uint256 r) private pure {
-        G(v, m, 0, 4,  8, 12, m[sigma(r, 0)],  m[sigma(r, 1)]);
-        G(v, m, 1, 5,  9, 13, m[sigma(r, 2)],  m[sigma(r, 3)]);
-        G(v, m, 2, 6, 10, 14, m[sigma(r, 4)],  m[sigma(r, 5)]);
-        G(v, m, 3, 7, 11, 15, m[sigma(r, 6)],  m[sigma(r, 7)]);
-        G(v, m, 0, 5, 10, 15, m[sigma(r, 8)],  m[sigma(r, 9)]);
-        G(v, m, 1, 6, 11, 12, m[sigma(r, 10)], m[sigma(r, 11)]);
-        G(v, m, 2, 7,  8, 13, m[sigma(r, 12)], m[sigma(r, 13)]);
-        G(v, m, 3, 4,  9, 14, m[sigma(r, 14)], m[sigma(r, 15)]);
+    // Pack 4 message words into lanes
+    function packM(uint32 m0, uint32 m1, uint32 m2, uint32 m3) private pure returns (uint256) {
+        return uint256(m0) | (uint256(m1) << 32) | (uint256(m2) << 64) | (uint256(m3) << 96);
+    }
+
+    // Byte-swap within each 32-bit lane (8 lanes)
+    function bswap32x8(uint256 x) private pure returns (uint256) {
+        unchecked {
+            uint256 mask0 = 0x000000FF000000FF000000FF000000FF000000FF000000FF000000FF000000FF;
+            uint256 mask1 = 0x0000FF000000FF000000FF000000FF000000FF000000FF000000FF000000FF00;
+            uint256 mask2 = 0x00FF000000FF000000FF000000FF000000FF000000FF000000FF000000FF0000;
+            uint256 mask3 = 0xFF000000FF000000FF000000FF000000FF000000FF000000FF000000FF000000;
+            return ((x & mask0) << 24) | ((x & mask1) << 8) | ((x & mask2) >> 8) | ((x & mask3) >> 24);
+        }
+    }
+
+    // Get m[sigma[r * 16 + i]] where sigma values are pre-multiplied by 4
+    function getWordBySigma(uint256[2] memory m, bytes memory sigma, uint256 r, uint256 i) private pure returns (uint32 result) {
+        assembly ("memory-safe") {
+            // offset = sigma[r * 16 + i] (already multiplied by 4)
+            let offset := shr(248, mload(add(add(sigma, 32), add(shl(4, r), i))))
+            result := shr(224, mload(add(m, offset)))
+        }
+    }
+
+    function compress(bytes memory sigma, uint256 h1, uint256 h2, uint64 t, bytes memory block_, uint256 offset, bool isFinal) 
+        private pure returns (uint256, uint256) 
+    {
+        uint256 m0;
+        uint256 m1;
+        assembly ("memory-safe") {
+            let ptr := add(add(block_, 32), offset)
+            m0 := mload(ptr)
+            m1 := mload(add(ptr, 32))
+        }
+        uint256[2] memory m = [bswap32x8(m0), bswap32x8(m1)];
+
+        // Initialize working vector v as 4 rows
+        // row0 = v[0..3] = h[0..3]
+        // row1 = v[4..7] = h[4..7]
+        // row2 = v[8..11] = IV[0..3]
+        // row3 = v[12..15] = IV[4..7] ^ (t, t>>32, final, 0)
+        uint256 row0 = h1;
+        uint256 row1 = h2;
+        uint256 row2 = uint256(IV0) | (uint256(IV1) << 32) | (uint256(IV2) << 64) | (uint256(IV3) << 96);
+        
+        uint32 v12 = uint32(t) ^ IV4;
+        uint32 v13 = uint32(t >> 32) ^ IV5;
+        uint32 v14 = isFinal ? (type(uint32).max ^ IV6) : IV6;
+        uint32 v15 = IV7;
+        uint256 row3 = uint256(v12) | (uint256(v13) << 32) | (uint256(v14) << 64) | (uint256(v15) << 96);
+
+        // 10 rounds
+        for (uint256 r = 0; r < 10; r++) {
+            // Column Gs: G(v[0,4,8,12]), G(v[1,5,9,13]), G(v[2,6,10,14]), G(v[3,7,11,15])
+            // x = m[sigma(r,0)], m[sigma(r,2)], m[sigma(r,4)], m[sigma(r,6)] for the 4 column Gs
+            // y = m[sigma(r,1)], m[sigma(r,3)], m[sigma(r,5)], m[sigma(r,7)]
+            uint256 mx = packM(getWordBySigma(m, sigma, r, 0), getWordBySigma(m, sigma, r, 2), getWordBySigma(m, sigma, r, 4), getWordBySigma(m, sigma, r, 6));
+            uint256 my = packM(getWordBySigma(m, sigma, r, 1), getWordBySigma(m, sigma, r, 3), getWordBySigma(m, sigma, r, 5), getWordBySigma(m, sigma, r, 7));
+            
+            (row0, row1, row2, row3) = G4(row0, row1, row2, row3, mx, my);
+            
+            // Rotate rows for diagonal layout
+            row1 = rotl_lanes_1(row1);
+            row2 = rotl_lanes_2(row2);
+            row3 = rotl_lanes_3(row3);
+            
+            // Diagonal Gs
+            // After rotation, lane i of each row gives us the diagonal elements
+            // x = m[sigma(r,8)], m[sigma(r,10)], m[sigma(r,12)], m[sigma(r,14)]
+            // y = m[sigma(r,9)], m[sigma(r,11)], m[sigma(r,13)], m[sigma(r,15)]
+            mx = packM(getWordBySigma(m, sigma, r, 8), getWordBySigma(m, sigma, r, 10), getWordBySigma(m, sigma, r, 12), getWordBySigma(m, sigma, r, 14));
+            my = packM(getWordBySigma(m, sigma, r, 9), getWordBySigma(m, sigma, r, 11), getWordBySigma(m, sigma, r, 13), getWordBySigma(m, sigma, r, 15));
+            
+            (row0, row1, row2, row3) = G4(row0, row1, row2, row3, mx, my);
+            
+            // Rotate back to column layout
+            row1 = rotl_lanes_3(row1);
+            row2 = rotl_lanes_2(row2);
+            row3 = rotl_lanes_1(row3);
+        }
+
+        // Finalize: h[i] ^= v[i] ^ v[i+8]
+        h1 = h1 ^ row0 ^ row2;
+        h2 = h2 ^ row1 ^ row3;
+
+        return (h1, h2);
     }
 }
 
 function blake2s(bytes memory input) pure returns (bytes32) {
-    return Blake2s.hash(input);
+    return Blake2s.hash(Blake2s.newHasher(), input);
 }
