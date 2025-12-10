@@ -16,11 +16,12 @@ library Blake2s {
 
     struct Hasher {
         bytes sigma;
+        uint256[2] m;
     }
 
     function newHasher() internal pure returns (Hasher memory) {
         // Sigma table with values pre-multiplied by 4 (byte offsets into m)
-        return Hasher(hex"0004080c1014181c2024282c3034383c38281020243c3418043000082c1c140c2c20300014083c3428380c181c0424101c240c0434302c380818142810003c202400141c0810283c38042c3018200c3408301828002c200c10341c143c3804243014043c38341028001c180c2408202c342c1c3830040c2414003c1020180828183c38242c0c00203008341c04102814280820101c1804143c2c24380c303400");
+        return Hasher(hex"0004080c1014181c2024282c3034383c38281020243c3418043000082c1c140c2c20300014083c3428380c181c0424101c240c0434302c380818142810003c202400141c0810283c38042c3018200c3408301828002c200c10341c143c3804243014043c38341028001c180c2408202c342c1c3830040c2414003c1020180828183c38242c0c00203008341c04102814280820101c1804143c2c24380c303400", [uint256(0), 0]);
     }
 
     function hash(Hasher memory hasher, bytes memory input) internal pure returns (bytes32) {
@@ -33,37 +34,42 @@ library Blake2s {
                    | (uint256(IV5) << 32) 
                    | (uint256(IV6) << 64) 
                    | (uint256(IV7) << 96);
-        uint64 t = 0;
-
         uint256 len = input.length;
-        uint256 offset = 0;
+        uint256 t = 0;
+
+        bytes memory sigma = hasher.sigma;
+        uint256[2] memory m = hasher.m;
 
         unchecked {
             while (len > BLOCKBYTES) {
                 t += BLOCKBYTES;
-                (h1, h2) = compress(hasher.sigma, h1, h2, t, input, offset, false);
-                offset += BLOCKBYTES;
+                uint256 m0;
+                uint256 m1;
+                assembly ("memory-safe") {
+                    let ptr := add(add(input, 32), sub(t, 64))
+                    m0 := mload(ptr)
+                    m1 := mload(add(ptr, 32))
+                }
+                (h1, h2) = compress(sigma, m, m0, m1, h1, h2, uint64(t), false);
                 len -= BLOCKBYTES;
             }
 
-            bytes memory padded = new bytes(64);
             assembly ("memory-safe") {
-                let src := add(add(input, 32), offset)
-                let dst := add(padded, 32)
-                
+                let src := add(add(input, 32), t)
+
                 // Copy data and zero the tail
-                mstore(dst, mload(src))
-                mstore(add(dst, len), 0)
-                mstore(add(dst, 32), 0)
-                
+                mstore(m, mload(src))
+                mstore(add(m, len), 0)
+                mstore(add(m, 32), 0)
+
                 // If len > 32, restore second word then re-zero tail
                 if gt(len, 32) {
-                    mstore(add(dst, 32), mload(add(src, 32)))
-                    mstore(add(dst, len), 0)
+                    mstore(add(m, 32), mload(add(src, 32)))
+                    mstore(add(m, len), 0)
                 }
             }
-            t += uint64(len);
-            (h1, h2) = compress(hasher.sigma, h1, h2, t, padded, 0, true);
+            t += len;
+            (h1, h2) = compress(sigma, m, m[0], m[1], h1, h2, uint64(t), true);
         }
 
         return hashFromState(h1, h2);
@@ -197,8 +203,14 @@ library Blake2s {
     }
 
     // Pack 4 message words into lanes
-    function packM(uint32 m0, uint32 m1, uint32 m2, uint32 m3) private pure returns (uint256) {
-        return uint256(m0) | (uint256(m1) << 32) | (uint256(m2) << 64) | (uint256(m3) << 96);
+    function packM(uint32 m0, uint32 m1, uint32 m2, uint32 m3) private pure returns (uint256 result) {
+        assembly ("memory-safe") {
+            mstore(12, m0)
+            mstore(8, m1)
+            mstore(4, m2)
+            mstore(0, m3)
+            result := mload(12)
+        }
     }
 
     // Byte-swap within each 32-bit lane (8 lanes)
@@ -221,17 +233,11 @@ library Blake2s {
         }
     }
 
-    function compress(bytes memory sigma, uint256 h1, uint256 h2, uint64 t, bytes memory block_, uint256 offset, bool isFinal) 
+    function compress(bytes memory sigma, uint256[2] memory m, uint256 m0, uint256 m1, uint256 h1, uint256 h2, uint64 t, bool isFinal) 
         private pure returns (uint256, uint256) 
     {
-        uint256 m0;
-        uint256 m1;
-        assembly ("memory-safe") {
-            let ptr := add(add(block_, 32), offset)
-            m0 := mload(ptr)
-            m1 := mload(add(ptr, 32))
-        }
-        uint256[2] memory m = [bswap32x8(m0), bswap32x8(m1)];
+        m[0] = bswap32x8(m0);
+        m[1] = bswap32x8(m1);
 
         // Initialize working vector v as 4 rows
         // row0 = v[0..3] = h[0..3]
@@ -248,34 +254,36 @@ library Blake2s {
         uint32 v15 = IV7;
         uint256 row3 = uint256(v12) | (uint256(v13) << 32) | (uint256(v14) << 64) | (uint256(v15) << 96);
 
-        // 10 rounds
-        for (uint256 r = 0; r < 10; r++) {
-            // Column Gs: G(v[0,4,8,12]), G(v[1,5,9,13]), G(v[2,6,10,14]), G(v[3,7,11,15])
-            // x = m[sigma(r,0)], m[sigma(r,2)], m[sigma(r,4)], m[sigma(r,6)] for the 4 column Gs
-            // y = m[sigma(r,1)], m[sigma(r,3)], m[sigma(r,5)], m[sigma(r,7)]
-            uint256 mx = packM(getWordBySigma(m, sigma, r, 0), getWordBySigma(m, sigma, r, 2), getWordBySigma(m, sigma, r, 4), getWordBySigma(m, sigma, r, 6));
-            uint256 my = packM(getWordBySigma(m, sigma, r, 1), getWordBySigma(m, sigma, r, 3), getWordBySigma(m, sigma, r, 5), getWordBySigma(m, sigma, r, 7));
-            
-            (row0, row1, row2, row3) = G4(row0, row1, row2, row3, mx, my);
-            
-            // Rotate rows for diagonal layout
-            row1 = rotl_lanes_1(row1);
-            row2 = rotl_lanes_2(row2);
-            row3 = rotl_lanes_3(row3);
-            
-            // Diagonal Gs
-            // After rotation, lane i of each row gives us the diagonal elements
-            // x = m[sigma(r,8)], m[sigma(r,10)], m[sigma(r,12)], m[sigma(r,14)]
-            // y = m[sigma(r,9)], m[sigma(r,11)], m[sigma(r,13)], m[sigma(r,15)]
-            mx = packM(getWordBySigma(m, sigma, r, 8), getWordBySigma(m, sigma, r, 10), getWordBySigma(m, sigma, r, 12), getWordBySigma(m, sigma, r, 14));
-            my = packM(getWordBySigma(m, sigma, r, 9), getWordBySigma(m, sigma, r, 11), getWordBySigma(m, sigma, r, 13), getWordBySigma(m, sigma, r, 15));
-            
-            (row0, row1, row2, row3) = G4(row0, row1, row2, row3, mx, my);
-            
-            // Rotate back to column layout
-            row1 = rotl_lanes_3(row1);
-            row2 = rotl_lanes_2(row2);
-            row3 = rotl_lanes_1(row3);
+        unchecked {
+            // 10 rounds
+            for (uint256 r = 0; r < 10; r++) {
+                // Column Gs: G(v[0,4,8,12]), G(v[1,5,9,13]), G(v[2,6,10,14]), G(v[3,7,11,15])
+                // x = m[sigma(r,0)], m[sigma(r,2)], m[sigma(r,4)], m[sigma(r,6)] for the 4 column Gs
+                // y = m[sigma(r,1)], m[sigma(r,3)], m[sigma(r,5)], m[sigma(r,7)]
+                uint256 mx = packM(getWordBySigma(m, sigma, r, 0), getWordBySigma(m, sigma, r, 2), getWordBySigma(m, sigma, r, 4), getWordBySigma(m, sigma, r, 6));
+                uint256 my = packM(getWordBySigma(m, sigma, r, 1), getWordBySigma(m, sigma, r, 3), getWordBySigma(m, sigma, r, 5), getWordBySigma(m, sigma, r, 7));
+                
+                (row0, row1, row2, row3) = G4(row0, row1, row2, row3, mx, my);
+                
+                // Rotate rows for diagonal layout
+                row1 = rotl_lanes_1(row1);
+                row2 = rotl_lanes_2(row2);
+                row3 = rotl_lanes_3(row3);
+                
+                // Diagonal Gs
+                // After rotation, lane i of each row gives us the diagonal elements
+                // x = m[sigma(r,8)], m[sigma(r,10)], m[sigma(r,12)], m[sigma(r,14)]
+                // y = m[sigma(r,9)], m[sigma(r,11)], m[sigma(r,13)], m[sigma(r,15)]
+                mx = packM(getWordBySigma(m, sigma, r, 8), getWordBySigma(m, sigma, r, 10), getWordBySigma(m, sigma, r, 12), getWordBySigma(m, sigma, r, 14));
+                my = packM(getWordBySigma(m, sigma, r, 9), getWordBySigma(m, sigma, r, 11), getWordBySigma(m, sigma, r, 13), getWordBySigma(m, sigma, r, 15));
+                
+                (row0, row1, row2, row3) = G4(row0, row1, row2, row3, mx, my);
+                
+                // Rotate back to column layout
+                row1 = rotl_lanes_3(row1);
+                row2 = rotl_lanes_2(row2);
+                row3 = rotl_lanes_1(row3);
+            }
         }
 
         // Finalize: h[i] ^= v[i] ^ v[i+8]
