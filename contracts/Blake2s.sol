@@ -39,12 +39,12 @@ library Blake2s {
 
         bytes memory sigma = hasher.sigma;
         uint256[2] memory m = hasher.m;
+        uint256 m0;
+        uint256 m1;
 
         unchecked {
             while (len > BLOCKBYTES) {
                 t += BLOCKBYTES;
-                uint256 m0;
-                uint256 m1;
                 assembly ("memory-safe") {
                     let ptr := add(add(input, 32), sub(t, 64))
                     m0 := mload(ptr)
@@ -56,20 +56,15 @@ library Blake2s {
 
             assembly ("memory-safe") {
                 let src := add(add(input, 32), t)
-
-                // Copy data and zero the tail
-                mstore(m, mload(src))
-                mstore(add(m, len), 0)
-                mstore(add(m, 32), 0)
-
-                // If len > 32, restore second word then re-zero tail
-                if gt(len, 32) {
-                    mstore(add(m, 32), mload(add(src, 32)))
-                    mstore(add(m, len), 0)
-                }
+                mstore(0, not(0))
+                mstore(32, 0)
+                let g := gt(len, 32)
+                let p := sub(shl(g, 32), len)
+                m0 := and(mload(src), mload(mul(iszero(g), p)))
+                m1 := and(mul(g, mload(add(src, 32))), mload(p))
             }
             t += len;
-            (h1, h2) = compress(sigma, m, m[0], m[1], h1, h2, uint64(t), true);
+            (h1, h2) = compress(sigma, m, m0, m1, h1, h2, uint64(t), true);
         }
 
         return hashFromState(h1, h2);
