@@ -97,26 +97,26 @@ library Blake2s {
     // Packed add: add 4x32-bit lanes without cross-lane carry
     function add32x4(uint256 a, uint256 b) private pure returns (uint256) {
         unchecked {
-            uint256 lo = (a & ~HIGHBIT) + (b & ~HIGHBIT);
-            // (a & H) ^ (b & H) == (a ^ b) & H
-            return lo ^ ((a ^ b) & HIGHBIT);
+            uint256 abLoSum = (a & ~HIGHBIT) + (b & ~HIGHBIT);
+            uint256 abHiXor = (a ^ b) & HIGHBIT;
+            return abLoSum ^ abHiXor;
         }
     }
 
     // Packed add of 3 values: a + b + c
     function add32x4_3(uint256 a, uint256 b, uint256 c) private pure returns (uint256) {
         unchecked {
-            // Combine high bits: (a&H) ^ (b&H) ^ (c&H) = (a^b^c) & H
-            uint256 abcHi = (a ^ b ^ c) & HIGHBIT;
-            uint256 aMasked = a & ~HIGHBIT;
-            uint256 bMasked = b & ~HIGHBIT;
-            uint256 cMasked = c & ~HIGHBIT;
-            
-            uint256 sumAB = aMasked + bMasked;
-            uint256 sumABMasked = sumAB & ~HIGHBIT;
-            uint256 sumABHi = sumAB ^ sumABMasked;
-            
-            return (sumABMasked + cMasked) ^ sumABHi ^ abcHi;
+            uint256 abcHiXor = (a ^ b ^ c) & HIGHBIT;
+
+            uint256 aLo = a & ~HIGHBIT;
+            uint256 bLo = b & ~HIGHBIT;
+            uint256 cLo = c & ~HIGHBIT;
+
+            uint256 abLoSum = aLo + bLo;
+            uint256 abLo    = abLoSum & ~HIGHBIT;
+            uint256 abHi    = abLoSum ^ abLo;
+
+            return (abLo + cLo) ^ abHi ^ abcHiXor;
         }
     }
 
