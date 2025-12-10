@@ -56,12 +56,15 @@ library Blake2s {
 
             assembly ("memory-safe") {
                 let src := add(add(input, 32), t)
-                mstore(0, not(0))
-                mstore(32, 0)
-                let g := gt(len, 32)
-                let p := sub(shl(g, 32), len)
-                m0 := and(mload(src), mload(mul(iszero(g), p)))
-                m1 := and(mul(g, mload(add(src, 32))), mload(p))
+                switch gt(len, 32)
+                case 0 {
+                    m0 := and(mload(src), shl(shl(3, sub(32, len)), not(0)))
+                    m1 := 0
+                }
+                default {
+                    m0 := mload(src)
+                    m1 := and(mload(add(src, 32)), shl(shl(3, sub(64, len)), not(0)))
+                }
             }
             t += len;
             (h1, h2) = compress(sigma, m, m0, m1, h1, h2, uint64(t), true);
