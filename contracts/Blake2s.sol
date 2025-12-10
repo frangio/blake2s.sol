@@ -76,16 +76,12 @@ library Blake2s {
     function hashFromState(uint256 h1, uint256 h2) private pure returns (bytes32) {
         uint256 x = (h1 << 128) | (h2 & MASK128);
         unchecked {
-            // Swap 64-bit halves within each 128-bit section
             x = ((x >> 64) & 0x0000000000000000FFFFFFFFFFFFFFFF0000000000000000FFFFFFFFFFFFFFFF) |
                 ((x << 64) & 0xFFFFFFFFFFFFFFFF0000000000000000FFFFFFFFFFFFFFFF0000000000000000);
-            // Swap 32-bit halves within each 64-bit section
             x = ((x >> 32) & 0x00000000FFFFFFFF00000000FFFFFFFF00000000FFFFFFFF00000000FFFFFFFF) |
                 ((x << 32) & 0xFFFFFFFF00000000FFFFFFFF00000000FFFFFFFF00000000FFFFFFFF00000000);
-            // Swap 16-bit halves within each 32-bit section
             x = ((x >> 16) & 0x0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF) |
                 ((x << 16) & 0xFFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000);
-            // Swap 8-bit halves within each 16-bit section
             x = ((x >> 8) & 0x00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF) |
                 ((x << 8) & 0xFF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00);
         }
